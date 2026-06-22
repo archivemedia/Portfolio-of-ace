@@ -1,3 +1,10 @@
+--[[
+    Type Of Script: Custom enemy ai combat system 
+    Author: Ace/Logan Boccasini
+    Notes: The animations are not mine they are used as examples. The scripts are fully custom and owned by me. 
+    Youtube link: This system cannot be showcased due to it being apart of the enemy ai and being hard to see.
+    Lines of code: 336
+]]
 local dummy = script.Parent
 local humanoid = dummy:WaitForChild("Humanoid")
 local root = dummy:WaitForChild("HumanoidRootPart")
