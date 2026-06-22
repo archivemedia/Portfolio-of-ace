@@ -1,0 +1,274 @@
+--[[
+    Type Of Script: SwordServer Script
+    Author: Ace/Logan Boccasini
+    Notes: The animations are not mine they are used as examples. The scripts are fully custom and owned by me. 
+    Youtube link: https://youtu.be/xP3EWPy10y0
+    Lines of code: 266
+    DISCLAIMER: SOME OF THE SCRIPTS MAY NOT WORK WITHOUT THE OTHERS THAT ARE CONNECTED IN THE SHOWCASE GAME (THIS IS FOR THE SAFETY OF THESE SCRIPTS)
+]]
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+
+local swordEvent = Instance.new("RemoteEvent")
+swordEvent.Name = "SwordRequest"
+swordEvent.Parent = ReplicatedStorage
+
+local SWORD_NAME = "Adventurer Sword"
+
+local SWING_COOLDOWN = 0.6
+local COMBO_RESET_WINDOW = 1.2
+local SWING_ACTIVE_DURATION = 0.3
+
+local SWING_DAMAGE = 10
+local KNOCKBACK_FORCE = 45 
+local KNOCKBACK_UP_FORCE = 8
+
+local BLOCK_DAMAGE_REDUCTION = 0.7 
+local BLOCKS_BEFORE_BREAK = 3 
+local BLOCK_BREAK_WINDOW = 4 
+
+local cooldowns = {}
+local comboState = {} 
+local blockHitState = {} 
+
+local function getValidatedComboIndex(player)
+	local state = comboState[player]
+	local now = tick()
+
+	if not state or (now - state.lastSwingTime) > COMBO_RESET_WINDOW then
+		state = { index = 0, lastSwingTime = now }
+	end
+
+	state.index = (state.index % 4) + 1
+	state.lastSwingTime = now
+	comboState[player] = state
+
+	return state.index
+end
+
+local DEBUG_VISIBLE_HITBOX = false
+
+local function getOrCreateHitbox(tool)
+	local blade = tool:FindFirstChild("Blade")
+	if not blade then
+		warn("[SwordServer] No part named 'Blade' found in " .. tool.Name)
+		return nil
+	end
+
+	local existing = blade:FindFirstChild("SwingHitbox")
+	if existing then return existing end
+
+	local hitbox = Instance.new("Part")
+	hitbox.Name = "SwingHitbox"
+
+	hitbox.Size = blade.Size + Vector3.new(0.3, 0.3, 0.3)
+	hitbox.Color = Color3.new(1, 0, 0)
+	hitbox.Transparency = DEBUG_VISIBLE_HITBOX and 0.5 or 1
+	hitbox.CanCollide = false
+	hitbox.CanTouch = false 
+	hitbox.CanQuery = false
+	hitbox.Massless = true
+	hitbox.Anchored = true 
+	hitbox.CFrame = blade.CFrame
+	hitbox.Parent = blade
+	hitbox.Anchored = false
+	local weld = Instance.new("WeldConstraint")
+	weld.Part0 = blade
+	weld.Part1 = hitbox
+	weld.Parent = hitbox
+
+	return hitbox
+end
+
+local function applyHit(attacker, attackerRoot, targetPlayer, targetHumanoid, targetRoot, targetCharacter, swingDamage)
+	local oldTag = targetHumanoid:FindFirstChild("creator")
+	if oldTag then
+		oldTag:Destroy()
+	end
+
+	local tag = Instance.new("ObjectValue")
+	tag.Name = "creator"
+	tag.Value = attacker
+	tag.Parent = targetHumanoid
+	game:GetService("Debris"):AddItem(tag, 30)
+
+	local isBlocking = targetCharacter:GetAttribute("Blocking")
+	local actualDamage = swingDamage
+
+	if isBlocking then
+		actualDamage = swingDamage * (1 - BLOCK_DAMAGE_REDUCTION)
+		local now = tick()
+		local state = targetPlayer and blockHitState[targetPlayer]
+		if not state or (now - state.lastBlockTime) > BLOCK_BREAK_WINDOW then
+			state = { count = 0, lastBlockTime = now }
+		end
+		state.count += 1
+		state.lastBlockTime = now
+		if targetPlayer then
+			blockHitState[targetPlayer] = state
+		end
+
+		if state.count >= BLOCKS_BEFORE_BREAK then
+			actualDamage = swingDamage
+			targetCharacter:SetAttribute("Blocking", false)
+			targetCharacter:SetAttribute("BlockBroken", true)
+			if targetPlayer then
+				blockHitState[targetPlayer] = nil
+			end
+		end
+	end
+
+	local targetCharacter = targetHumanoid.Parent
+
+	if targetCharacter:GetAttribute("Blocking") then
+
+		if targetCharacter:GetAttribute("Blocking") then
+			local hits = targetCharacter:GetAttribute("BlockHits") or 0
+			hits += 1
+
+			targetCharacter:SetAttribute("BlockHits", hits)
+
+			print("Block hits:", hits)
+
+			game.ReplicatedStorage.CombatVFX:FireAllClients(
+				"Block",
+				targetRoot.Position
+			)
+
+			if hits >= 5 then
+				print("BLOCK BROKEN!")
+
+				targetCharacter:SetAttribute("Blocking", false)
+				targetCharacter:SetAttribute("BlockBroken", true)
+				targetCharacter:SetAttribute("BlockHits", 0)
+
+				game.ReplicatedStorage.CombatVFX:FireAllClients(
+					"BlockBreak",
+					targetRoot.Position
+				)
+			end
+
+			return
+		end
+
+		targetCharacter:SetAttribute("BlockHits", hits)
+
+		game.ReplicatedStorage.CombatVFX:FireAllClients(
+			"Block",
+			targetRoot.Position
+
+		)
+
+		if hits >= 5 then
+			targetCharacter:SetAttribute("Blocking", false)
+			targetCharacter:SetAttribute("BlockBroken", true)
+			targetCharacter:SetAttribute("BlockHits", 0)
+
+			game.ReplicatedStorage.CombatVFX:FireAllClients(
+				"BlockBreak",
+				targetRoot.Position
+			)
+		end
+
+		return
+	end
+
+	targetHumanoid:TakeDamage(swingDamage)
+	local knockbackMultiplier = (isBlocking and actualDamage < swingDamage) and 0.4 or 1
+	local direction = (targetRoot.Position - attackerRoot.Position)
+	direction = Vector3.new(direction.X, 0, direction.Z)
+	if direction.Magnitude < 0.1 then
+		direction = attackerRoot.CFrame.LookVector
+	end
+	direction = direction.Unit
+
+	local knockbackVelocity = direction * KNOCKBACK_FORCE * knockbackMultiplier + Vector3.new(0, KNOCKBACK_UP_FORCE, 0)
+
+	local bv = Instance.new("BodyVelocity")
+	bv.MaxForce = Vector3.new(1e5, 1e5, 1e5)
+	bv.Velocity = knockbackVelocity
+	bv.Parent = targetRoot
+	task.delay(0.15, function()
+		if bv then bv:Destroy() end
+	end)
+end
+
+local function checkHitboxOverlap(hitbox, attacker, attackerHumanoid, attackerRoot, hitTargets, swingDamage)
+	local overlapParams = OverlapParams.new()
+	overlapParams.FilterType = Enum.RaycastFilterType.Exclude
+	overlapParams.FilterDescendantsInstances = { attacker.Character }
+
+	local parts = workspace:GetPartsInPart(hitbox, overlapParams)
+
+	for _, part in ipairs(parts) do
+		local otherCharacter = part.Parent
+		if not otherCharacter then continue end
+		if otherCharacter == attacker.Character then continue end
+
+		local targetHumanoid = otherCharacter:FindFirstChildOfClass("Humanoid")
+		local targetRoot = otherCharacter:FindFirstChild("HumanoidRootPart")
+		if not targetHumanoid or not targetRoot then continue end
+		if targetHumanoid == attackerHumanoid then continue end
+		if targetHumanoid.Health <= 0 then continue end
+		if hitTargets[targetHumanoid] then continue end 
+		if otherCharacter:GetAttribute("Dashing") then continue end
+
+		hitTargets[targetHumanoid] = true
+		local targetPlayer = game.Players:GetPlayerFromCharacter(otherCharacter)
+		applyHit(attacker, attackerRoot, targetPlayer, targetHumanoid, targetRoot, otherCharacter, swingDamage)
+		swordEvent:FireClient(attacker, attacker, "HitConfirmed")
+	end
+end
+
+swordEvent.OnServerEvent:Connect(function(player)
+	local character = player.Character
+	if not character then return end
+
+	local humanoid = character:FindFirstChildOfClass("Humanoid")
+	local rootPart = character:FindFirstChild("HumanoidRootPart")
+	if not humanoid or not rootPart then return end
+
+	local tool = character:FindFirstChild(SWORD_NAME)
+	if not tool or not tool:IsA("Tool") then return end
+
+	local now = tick()
+	if cooldowns[player] and now - cooldowns[player] < SWING_COOLDOWN then
+		return
+	end
+	cooldowns[player] = now
+
+	local realComboIndex = getValidatedComboIndex(player)
+
+	swordEvent:FireAllClients(player, "PlaySwing", realComboIndex)
+
+	local hitbox = getOrCreateHitbox(tool)
+	if not hitbox then return end
+
+	local hitTargets = {}
+	local elapsed = 0
+	local checkConnection
+
+	checkConnection = RunService.Heartbeat:Connect(function(dt)
+		elapsed += dt
+		checkHitboxOverlap(hitbox, player, humanoid, rootPart, hitTargets, SWING_DAMAGE)
+
+		if elapsed >= SWING_ACTIVE_DURATION then
+			checkConnection:Disconnect()
+		end
+	end)
+end)
+
+workspace.DescendantAdded:Connect(function(descendant)
+	if descendant.Name ~= SWORD_NAME then return end
+	if not descendant:IsA("Tool") then return end
+
+	task.defer(function()
+		getOrCreateHitbox(descendant)
+	end)
+end)
+
+game.Players.PlayerRemoving:Connect(function(player)
+	cooldowns[player] = nil
+	comboState[player] = nil
+	blockHitState[player] = nil
+end)
