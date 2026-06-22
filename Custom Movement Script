@@ -1,0 +1,292 @@
+--[[
+    Type Of Script: Custom Movement Script + Sword animations (Including dashing)
+    Author: Ace/Logan Boccasini
+    Notes: The animations are not mine they are used as examples. The scripts are fully custom and owned by me.
+    Youtube link: 
+    Lines of code: 285
+]]
+local character = script.Parent
+local humanoid = character:WaitForChild("Humanoid")
+local isBlocking = false
+
+local animator = humanoid:FindFirstChildOfClass("Animator")
+if not animator then
+	animator = Instance.new("Animator")
+	animator.Parent = humanoid
+end
+
+local ANIMATIONS = {
+	idle       = "rbxassetid://78656047438114",
+	walk       = "rbxassetid://119520542085095",
+	run        = "rbxassetid://125725446460561",
+	jump       = "rbxassetid://135331680667731",
+	fall       = "rbxassetid://80301271870220",
+	dash       = "rbxassetid://100277426026602",
+
+	block      = "rbxassetid://107209890687565",
+	blockbreak = "rbxassetid://114146663823690",
+
+	swing1     = "rbxassetid://134949862775668",
+	swing2     = "rbxassetid://101690859044084",
+	swing3     = "rbxassetid://120201508271570",
+	swing4     = "rbxassetid://118486957700182",
+
+	death      = "rbxassetid://139196222716234",
+}
+
+humanoid.BreakJointsOnDeath = false
+
+local tracks = {}
+for name, id in pairs(ANIMATIONS) do
+	local anim = Instance.new("Animation")
+	anim.AnimationId = id
+	tracks[name] = animator:LoadAnimation(anim)
+end
+
+tracks.idle.Looped = true
+tracks.walk.Looped = true
+tracks.run.Looped = true
+tracks.fall.Looped = true
+tracks.block.Looped = true
+tracks.jump.Looped = false
+tracks.dash.Looped = false
+tracks.blockbreak.Looped = false
+tracks.swing1.Looped = false
+tracks.swing2.Looped = false
+tracks.swing3.Looped = false
+tracks.swing4.Looped = false
+tracks.death.Looped = false
+tracks.blockbreak.Looped = false
+
+tracks.idle.Priority = Enum.AnimationPriority.Idle
+tracks.walk.Priority = Enum.AnimationPriority.Movement
+tracks.run.Priority = Enum.AnimationPriority.Movement
+tracks.jump.Priority = Enum.AnimationPriority.Action
+tracks.fall.Priority = Enum.AnimationPriority.Movement
+tracks.dash.Priority = Enum.AnimationPriority.Action4
+tracks.block.Priority = Enum.AnimationPriority.Action3
+tracks.blockbreak.Priority = Enum.AnimationPriority.Action4
+tracks.swing1.Priority = Enum.AnimationPriority.Action2
+tracks.swing2.Priority = Enum.AnimationPriority.Action2
+tracks.swing3.Priority = Enum.AnimationPriority.Action2
+tracks.swing4.Priority = Enum.AnimationPriority.Action2
+tracks.death.Priority = Enum.AnimationPriority.Action4
+tracks.blockbreak.Priority = Enum.AnimationPriority.Action4
+
+local SWING_TRACK_BY_INDEX = {
+	[1] = "swing1",
+	[2] = "swing2",
+	[3] = "swing3",
+	[4] = "swing4",
+}
+
+local currentTrack = nil
+local isAttacking = false 
+local isBlocking = false  
+local isStunned = false   
+local isDead = false    
+
+local function playTrack(name, fadeTime)
+	local track = tracks[name]
+	if currentTrack == track then return end
+
+	if currentTrack then
+		currentTrack:Stop(fadeTime or 0.15)
+	end
+	track:Play(fadeTime or 0.15)
+	currentTrack = track
+end
+
+local function updateAnimation()
+	if isDead or isAttacking or isStunned then return end
+
+	if isBlocking then
+		playTrack("block")
+		return
+	end
+
+	local state = humanoid:GetState()
+
+	if state == Enum.HumanoidStateType.Freefall then
+		playTrack("fall")
+		return
+	elseif state == Enum.HumanoidStateType.Jumping then
+		playTrack("jump")
+		return
+	end
+
+	local sprinting = character:GetAttribute("Sprinting")
+	local moving = humanoid.MoveDirection.Magnitude > 0
+
+	if not moving then
+		playTrack("idle")
+	elseif sprinting then
+		playTrack("run")
+	else
+		playTrack("walk")
+	end
+end
+
+humanoid.StateChanged:Connect(function(_, newState)
+	if isDead or isAttacking or isStunned then return end
+	if newState == Enum.HumanoidStateType.Freefall then
+		playTrack("fall")
+	elseif newState == Enum.HumanoidStateType.Jumping then
+		playTrack("jump")
+	elseif newState == Enum.HumanoidStateType.Landed
+		or newState == Enum.HumanoidStateType.Running then
+		updateAnimation()
+	end
+end)
+
+humanoid.Running:Connect(function()
+	if isDead or isAttacking or isStunned then return end
+	if humanoid:GetState() == Enum.HumanoidStateType.Freefall
+		or humanoid:GetState() == Enum.HumanoidStateType.Jumping then
+		return
+	end
+	updateAnimation()
+end)
+
+character:GetAttributeChangedSignal("Dashing"):Connect(function()
+	if isDead then return end
+	local isDashing = character:GetAttribute("Dashing")
+	if isDashing then
+		playTrack("dash", 0.05)
+	else
+		updateAnimation()
+	end
+end)
+
+
+character:GetAttributeChangedSignal("Sprinting"):Connect(function()
+	if isDead then return end
+	updateAnimation()
+end)
+
+character:GetAttributeChangedSignal("Blocking"):Connect(function()
+	if isDead or isAttacking or isStunned then return end
+	isBlocking = character:GetAttribute("Blocking") or false
+	updateAnimation()
+end)
+
+character:GetAttributeChangedSignal("BlockBroken"):Connect(function()
+	if isDead then return end
+	if not character:GetAttribute("BlockBroken") then return end
+
+	isBlocking = false
+	isStunned = true
+	playTrack("blockbreak", 0.05)
+
+	local stunTrack = tracks.blockbreak
+	local stunDuration = stunTrack.Length > 0 and stunTrack.Length or 1
+
+	task.delay(stunDuration, function()
+		isStunned = false
+		character:SetAttribute("BlockBroken", false)
+		updateAnimation()
+	end)
+end)
+
+local swingFinishedEvent = Instance.new("BindableEvent")
+swingFinishedEvent.Name = "SwingAnimationFinished"
+swingFinishedEvent.Parent = script
+
+local swingBindable = Instance.new("BindableFunction")
+swingBindable.Name = "PlaySwingAnimation"
+swingBindable.Parent = script
+
+swingBindable.OnInvoke = function(comboIndex)
+	if isDead or isStunned then return end 
+
+	local trackName = SWING_TRACK_BY_INDEX[comboIndex] or "swing1"
+	local track = tracks[trackName]
+
+	isAttacking = true
+	playTrack(trackName, 0.05)
+
+	local finished = false
+	local connection = track.Stopped:Connect(function()
+		finished = true
+	end)
+
+	local elapsed = 0
+	local TIMEOUT = 2
+	while not finished and elapsed < TIMEOUT do
+		task.wait(0.05)
+		elapsed += 0.05
+	end
+
+	connection:Disconnect()
+	isAttacking = false
+	updateAnimation()
+	swingFinishedEvent:Fire()
+end
+
+local forceRefreshBindable = Instance.new("BindableFunction")
+forceRefreshBindable.Name = "ForceRefreshAnimation"
+forceRefreshBindable.Parent = script
+
+forceRefreshBindable.OnInvoke = function()
+	isAttacking = false
+
+	for _, track in pairs(tracks) do
+		if track.IsPlaying then
+			track:Stop(0)
+		end
+	end
+	currentTrack = nil
+
+	updateAnimation()
+end
+
+humanoid.Died:Connect(function()
+	isDead = true
+	isAttacking = false
+	isStunned = false
+	isBlocking = false
+
+	for _, track in pairs(tracks) do
+		if track.IsPlaying then
+			track:Stop(0)
+		end
+	end
+	currentTrack = nil
+
+	playTrack("death", 0.1)
+
+	humanoid.PlatformStand = true
+end)
+
+task.wait(0.5)
+updateAnimation()
+
+character:GetAttributeChangedSignal("Blocking"):Connect(function()
+	local blocking = character:GetAttribute("Blocking")
+
+	if blocking then
+		isBlocking = true
+		playTrack("block", 0.05)
+	else
+		isBlocking = false
+		updateAnimation()
+	end
+end)
+
+character:GetAttributeChangedSignal("BlockBroken"):Connect(function()
+	if character:GetAttribute("BlockBroken") then
+
+		isBlocking = false
+		isStunned = true
+
+		playTrack("blockbreak", 0.05)
+
+		task.wait(tracks.blockbreak.Length)
+
+		isStunned = false
+
+		character:SetAttribute("BlockBroken", false)
+
+		updateAnimation()
+	end
+end)
