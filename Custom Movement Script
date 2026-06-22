@@ -4,6 +4,7 @@
     Notes: The animations are not mine they are used as examples. The scripts are fully custom and owned by me.
     Youtube link: https://youtu.be/bLanhiO2pbA
     Lines of code: 285
+    DISCLAIMER: SOME OF THE SCRIPTS MAY NOT WORK WITHOUT THE OTHERS THAT ARE CONNECTED IN THE SHOWCASE GAME (THIS IS FOR THE SAFETY OF THESE SCRIPTS)
 ]]
 local character = script.Parent
 local humanoid = character:WaitForChild("Humanoid")
