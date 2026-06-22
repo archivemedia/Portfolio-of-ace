@@ -1,0 +1,336 @@
+local dummy = script.Parent
+local humanoid = dummy:WaitForChild("Humanoid")
+local root = dummy:WaitForChild("HumanoidRootPart")
+
+print("Dummy combat script started:", script:GetFullName())
+
+local IDLE_ID = "rbxassetid://78656047438114"
+local WALK_ID = "rbxassetid://119520542085095"
+local JUMP_ID = "rbxassetid://135331680667731"
+local FALL_ID = "rbxassetid://80301271870220"
+
+local ATTACK1_ID = "rbxassetid://118745694144183"
+local ATTACK2_ID = "rbxassetid://109609784859980"
+local ATTACK3_ID = "rbxassetid://102329388622291"
+local ATTACK4_ID = "rbxassetid://89018241452193"
+local BLOCK_ID = "rbxassetid://121897154983689"
+local DEATH_ID = "rbxassetid://139196222716234"
+
+humanoid.BreakJointsOnDeath = false
+
+local ATTACK_DAMAGE = 5
+local ATTACK_RANGE = 7 
+local ENGAGEMENT_DISTANCE = 11 
+local MIN_COMFORTABLE_DISTANCE = 8 
+local CHASE_RANGE = 40
+local ATTACK_COOLDOWN = 5
+local BLOCK_TIME = 1.5
+
+local CIRCLE_REPICK_INTERVAL_MIN = 0.8 
+local CIRCLE_REPICK_INTERVAL_MAX = 1.6
+local CIRCLE_DIRECTION_CHANGE_CHANCE = 0.35 
+local OPENING_CHANCE = 0.25 
+
+local BLOCK_DAMAGE_REDUCTION = 0.7 
+local BLOCKS_BEFORE_BREAK = 3 
+local BLOCK_BREAK_WINDOW = 4 
+
+local animator = humanoid:FindFirstChildOfClass("Animator")
+
+if not animator then
+	animator = Instance.new("Animator")
+	animator.Parent = humanoid
+end
+
+local function loadAnimation(id)
+	local anim = Instance.new("Animation")
+	anim.AnimationId = id
+	return animator:LoadAnimation(anim)
+end
+
+local tracks = {
+	Idle = loadAnimation(IDLE_ID),
+	Walk = loadAnimation(WALK_ID),
+	Jump = loadAnimation(JUMP_ID),
+	Fall = loadAnimation(FALL_ID),
+
+	Attack1 = loadAnimation(ATTACK1_ID),
+	Attack2 = loadAnimation(ATTACK2_ID),
+	Attack3 = loadAnimation(ATTACK3_ID),
+	Attack4 = loadAnimation(ATTACK4_ID),
+	Block = loadAnimation(BLOCK_ID),
+	Death = loadAnimation(DEATH_ID)
+}
+
+tracks.Idle.Looped = true
+tracks.Walk.Looped = true
+tracks.Death.Looped = false
+tracks.Death.Priority = Enum.AnimationPriority.Action4
+
+local currentTrack
+
+local function playTrack(name)
+	local track = tracks[name]
+
+	if currentTrack == track then
+		return
+	end
+
+	if currentTrack then
+		currentTrack:Stop(0.2)
+	end
+
+	currentTrack = track
+	track:Play(0.2)
+end
+
+playTrack("Idle")
+
+local function getNearestPlayer()
+	local nearest
+	local nearestDistance = math.huge
+
+	for _, player in ipairs(game.Players:GetPlayers()) do
+		local character = player.Character
+
+		if character then
+			local hrp = character:FindFirstChild("HumanoidRootPart")
+			local hum = character:FindFirstChild("Humanoid")
+
+			if hrp and hum and hum.Health > 0 then
+				local distance =
+					(hrp.Position - root.Position).Magnitude
+
+				if distance < nearestDistance then
+					nearestDistance = distance
+					nearest = player
+				end
+			end
+		end
+	end
+
+	return nearest, nearestDistance
+end
+
+local blockHitState = {} 
+
+local function damagePlayer(player)
+	local character = player.Character
+	if not character then return end
+
+	local hum = character:FindFirstChild("Humanoid")
+	local hrp = character:FindFirstChild("HumanoidRootPart")
+
+	if not hum or not hrp then
+		return
+	end
+
+	if (hrp.Position - root.Position).Magnitude <= ATTACK_RANGE then
+		local isBlocking = character:GetAttribute("Blocking")
+		local actualDamage = ATTACK_DAMAGE
+
+		if isBlocking then
+			actualDamage = ATTACK_DAMAGE * (1 - BLOCK_DAMAGE_REDUCTION)
+
+			local now = tick()
+			local state = blockHitState[character]
+			if not state or (now - state.lastBlockTime) > BLOCK_BREAK_WINDOW then
+				state = { count = 0, lastBlockTime = now }
+			end
+			state.count += 1
+			state.lastBlockTime = now
+			blockHitState[character] = state
+
+			if state.count >= BLOCKS_BEFORE_BREAK then
+				actualDamage = ATTACK_DAMAGE
+				character:SetAttribute("Blocking", false)
+				character:SetAttribute("BlockBroken", true)
+				blockHitState[character] = nil
+			end
+		else
+			blockHitState[character] = nil
+		end
+
+		print("Dummy attacked at", tick(), "- blocked:", isBlocking, "- damage:", actualDamage)
+		hum:TakeDamage(actualDamage)
+	end
+end
+
+local combo = 1
+local isAttackAnimating = false
+local attackCooldownUntil = 0 
+local isDead = false
+
+local circleAngle = math.random() * math.pi * 2
+local circleDirection = 1
+local nextRepickTime = 0
+local committingToOpening = false
+
+humanoid.Died:Once(function()
+	isDead = true
+	isAttackAnimating = true
+
+	for _, track in pairs(tracks) do
+		if track.IsPlaying then
+			track:Stop(0)
+		end
+	end
+
+	playTrack("Death")
+	humanoid.PlatformStand = true
+end)
+
+local function smoothFaceTowards(targetPosition, dt)
+	local flatDirection = Vector3.new(
+		targetPosition.X - root.Position.X,
+		0,
+		targetPosition.Z - root.Position.Z
+	)
+	if flatDirection.Magnitude < 0.05 then return end
+
+	local targetCFrame = CFrame.lookAt(root.Position, root.Position + flatDirection)
+	local currentRotation = root.CFrame - root.CFrame.Position
+	local desiredRotation = targetCFrame - targetCFrame.Position
+
+	local turnSpeed = 6
+	local alpha = math.clamp(turnSpeed * dt, 0, 1)
+	local blended = currentRotation:Lerp(desiredRotation, alpha)
+
+	root.CFrame = blended + root.Position
+end
+
+while humanoid.Health > 0 and not isDead do
+	local dt = task.wait(0.1)
+	dt = dt or 0.1
+
+	local player, distance = getNearestPlayer()
+
+	if player then
+		local character = player.Character
+		local hrp = character and character:FindFirstChild("HumanoidRootPart")
+
+		if hrp then
+			if not isAttackAnimating then
+				if distance > CHASE_RANGE then
+				elseif distance < MIN_COMFORTABLE_DISTANCE then
+					committingToOpening = false
+
+					local awayDirection = (root.Position - hrp.Position)
+					awayDirection = Vector3.new(awayDirection.X, 0, awayDirection.Z)
+					if awayDirection.Magnitude < 0.1 then
+						awayDirection = root.CFrame.LookVector * -1
+					end
+					awayDirection = awayDirection.Unit
+
+					local retreatPoint = root.Position + awayDirection * (ENGAGEMENT_DISTANCE - distance + 3)
+					humanoid:MoveTo(retreatPoint)
+					playTrack("Walk")
+					smoothFaceTowards(hrp.Position, dt)
+				elseif distance > ENGAGEMENT_DISTANCE + 1.5 then
+					humanoid:MoveTo(hrp.Position)
+					committingToOpening = false
+
+					if humanoid.FloorMaterial == Enum.Material.Air then
+						local velocity = root.AssemblyLinearVelocity.Y
+						playTrack(velocity > 0 and "Jump" or "Fall")
+					else
+						playTrack("Walk")
+					end
+				else
+
+					local now = tick()
+					if now >= nextRepickTime then
+						nextRepickTime = now + CIRCLE_REPICK_INTERVAL_MIN
+							+ math.random() * (CIRCLE_REPICK_INTERVAL_MAX - CIRCLE_REPICK_INTERVAL_MIN)
+
+						if math.random() < CIRCLE_DIRECTION_CHANGE_CHANCE then
+							circleDirection *= -1
+						end
+
+						committingToOpening = math.random() < OPENING_CHANCE
+					end
+
+					if committingToOpening then
+						local towardDirection = (hrp.Position - root.Position)
+						towardDirection = Vector3.new(towardDirection.X, 0, towardDirection.Z)
+						if towardDirection.Magnitude > ATTACK_RANGE then
+							towardDirection = towardDirection.Unit
+							local stopShortPoint = hrp.Position - towardDirection * (ATTACK_RANGE - 0.5)
+							humanoid:MoveTo(stopShortPoint)
+						else
+							committingToOpening = false
+						end
+						playTrack("Walk")
+					else
+						circleAngle += circleDirection * 0.6 * dt
+						local circlePoint = hrp.Position + Vector3.new(
+							math.cos(circleAngle) * ENGAGEMENT_DISTANCE,
+							0,
+							math.sin(circleAngle) * ENGAGEMENT_DISTANCE
+						)
+						humanoid:MoveTo(circlePoint)
+						playTrack("Walk")
+					end
+
+					smoothFaceTowards(hrp.Position, dt)
+				end
+			end
+
+			local now = tick()
+			if distance <= ATTACK_RANGE and not isAttackAnimating and now >= attackCooldownUntil then
+				isAttackAnimating = true
+				committingToOpening = false
+
+				root.CFrame = CFrame.lookAt(root.Position, hrp.Position)
+
+				if combo == 1 then
+					playTrack("Attack1")
+					task.wait(0.4)
+					damagePlayer(player)
+					combo = 2
+
+				elseif combo == 2 then
+					playTrack("Attack2")
+					task.wait(0.4)
+					damagePlayer(player)
+					combo = 3
+
+				elseif combo == 3 then
+					playTrack("Attack3")
+					task.wait(0.4)
+					damagePlayer(player)
+					combo = 4
+
+				elseif combo == 4 then
+					playTrack("Attack4")
+					task.wait(0.5)
+					damagePlayer(player)
+					combo = 5
+
+				elseif combo == 5 then
+					dummy:SetAttribute("Blocking", true)
+
+					playTrack("Block")
+					task.wait(BLOCK_TIME)
+
+					dummy:SetAttribute("Blocking", false)
+					combo = 1
+				end
+
+				isAttackAnimating = false
+				attackCooldownUntil = tick() + ATTACK_COOLDOWN
+			end
+		end
+	end
+
+	if not isAttackAnimating and (not player or distance > CHASE_RANGE) then
+		if humanoid.FloorMaterial == Enum.Material.Air then
+			local velocity = root.AssemblyLinearVelocity.Y
+			playTrack(velocity > 0 and "Jump" or "Fall")
+		elseif humanoid.MoveDirection.Magnitude > 0 then
+			playTrack("Walk")
+		else
+			playTrack("Idle")
+		end
+	end
+end
